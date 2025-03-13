@@ -5,12 +5,17 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:P2PFileTransfer"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        Title="P2P File Transfer" Height="400" Width="400">
     <Grid>
         <StackPanel Margin="10">
             <TextBlock Text="Your ID (Public Key): " HorizontalAlignment="Center" Margin="10"/>
-            <TextBox x:Name="txtYourId" IsReadOnly="True" Height="20" TextWrapping="NoWrap" Width="500"/>
+            <TextBox x:Name="txtYourId" IsReadOnly="True" Height="20" TextWrapping="NoWrap" Width="300"/>
             <Button x:Name="btnGenerateId" Content="Generate ID" Click="btnGenerateId_Click" Margin="0,10,0,0" Width="200" Height="20"/>
+            <Button x:Name="btnStartServer" Content="Start Server" Click="btnStartServer_Click" Margin="0,10,0,0" Width="200" Height="30"/>
+            <TextBlock Text="Friend's IP:Port (e.g., 127.0.0.1:5000):" Margin="10,10,0,0"/>
+            <TextBox x:Name="txtFriendAddress" Text="127.0.0.1:5000" Margin="10"/>
+            <Button x:Name="btnConnect" Content="Connect to Friend" Click="btnConnect_Click" Margin="0,10,0,0"/>
+            <TextBlock x:Name="txtStatus" Text="Status: Not Started" Margin="0,10,0,0" HorizontalAlignment="Center"/>
         </StackPanel>
     </Grid>
 </Window>
