@@ -29,7 +29,13 @@ namespace P2PFileTransfer
             InitializeComponent();
         }
 
-        private void btnGenerateId_Click(object sender, RoutedEventArgs e)
+		private void btnGenerateId_Click(object sender, RoutedEventArgs e) => GenerateId();
+		private void btnStartServer_Click(object sender, RoutedEventArgs e) => StartServer();
+		private void btnConnect_Click(object sender, RoutedEventArgs e) => ConnectToFriend();
+		private void btnSendFile_Click(object sender, RoutedEventArgs e) => SendFile();
+		private void btnDisconnect_Click(object sender, RoutedEventArgs e) => Disconnect();
+
+		private void GenerateId()
 		{
 			try
 			{
@@ -47,13 +53,13 @@ namespace P2PFileTransfer
 				MessageBox.Show($"Error generatin ID: {ex.Message}");
 			}
 		}
-		private async void btnStartServer_Click(object sender, RoutedEventArgs e)
+		private async void StartServer()
 		{
 			try
 			{
 				if (isServerRunning)
 				{
-					MessageBox.Show("Server is already running!");
+					MessageBox.Show("Server is running!");
 					return;
 				}
 				// Set up the server to listen on any IP (0.0.0.0) and port 5000
@@ -61,7 +67,6 @@ namespace P2PFileTransfer
 				server.Start();
 				isServerRunning = true;
 				txtStatus.Text = "Server started. Waiting for connections...";
-				MessageBox.Show("Server started!");
 
 				// Keep accepting clients in a loop
 				await Task.Run(async () =>
@@ -71,7 +76,7 @@ namespace P2PFileTransfer
 						try
 						{
 							TcpClient client = await server.AcceptTcpClientAsync();
-							txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Status: Connected");
+							txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Client Connected");
 
 							// Handle the client in a separate task
 							_ = Task.Run(() => HandleClientAsync(client));
@@ -101,60 +106,59 @@ namespace P2PFileTransfer
 				while (true) // Keep connection alive for multiple commands
 				{
 					// Wait for a command
-					byte[] commandBuffer = new byte[1];
-					int bytesRead = await stream.ReadAsync(commandBuffer, 0, 1);
-					if (bytesRead == 0) break; // Client disconnected
+					byte[] cmd = new byte[1];
+					int read = await stream.ReadAsync(cmd, 0, 1);
+					if (read == 0) break; // Client disconnected
 
-					byte command = commandBuffer[0];
-					if (command == 1) // File send command
+
+					if (cmd[0] == 1) // File send command
 					{
 						// Exchange encryption keys
 						await ExchangeEncryptionKeys(stream, true);
-
-						// Receive file name length and name
-						byte[] nameLengthBytes = new byte[4];
-						await stream.ReadAsync(nameLengthBytes, 0, 4);
-						int nameLength = BitConverter.ToInt32(nameLengthBytes, 0);
-
-						byte[] nameBytes = new byte[nameLength];
-						await stream.ReadAsync(nameBytes, 0, nameLength);
-						string fileName = Encoding.UTF8.GetString(nameBytes);
-
-						// Receive and decrypt file
-						string outputPath = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
-						using (Aes aes = Aes.Create())
-						{
-							aes.Key = aesKey!;
-							aes.IV = aesIv!;
-							using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
-							using (CryptoStream cryptoStream = new CryptoStream(fileStream, aes.CreateDecryptor(), CryptoStreamMode.Write))
-							{
-								byte[] buffer = new byte[BUFFER_SIZE];
-								while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-								{
-									await cryptoStream.WriteAsync(buffer, 0, bytesRead);
-								}
-							}
-						}
-						txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Status: File received");
+						string fileName = await ReceiveFileName(stream);
+						string path = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
+						await ReceiveEncryptedFile(stream, path);
+						txtStatus.Dispatcher.Invoke(() => txtStatus.Text = $"File received: received_{fileName}");
 					}
-					else if (command == 0) // Connect only command
+					else if (cmd[0] == 0)
 					{
-						txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Status: Client connected, no file sent");
-					}
-					else
-					{
-						txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Status: Unknown command");
+						txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Client connected, no file.");
 					}
 				}
-
 				client.Close();
 			}
 			catch (Exception ex)
 			{
-				txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Status: Error receiving file");
+				txtStatus.Dispatcher.Invoke(() => txtStatus.Text = "Error receiving");
 				MessageBox.Show($"Receive error: {ex.Message}");
 				client.Close();
+			}
+		}
+		private async Task<string> ReceiveFileName(NetworkStream stream)
+		{
+			byte[] lenBytes = new byte[4];
+			await stream.ReadAsync(lenBytes, 0, 4);
+			int len = BitConverter.ToInt32(lenBytes, 0);
+			byte[] nameBytes = new byte[len];
+			await stream.ReadAsync(nameBytes, 0, len);
+			return Encoding.UTF8.GetString(nameBytes);
+		}
+		private async Task ReceiveEncryptedFile(NetworkStream stream, string path)
+		{
+			using (Aes aes = Aes.Create())
+			{
+				aes.Key = aesKey!;
+				aes.IV = aesIv!;
+				using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write))
+				using (CryptoStream cs = new CryptoStream(fs, aes.CreateDecryptor(), CryptoStreamMode.Write))
+				{
+					byte[] buffer = new byte[BUFFER_SIZE];
+					int bytesRead;
+					while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+					{
+						await cs.WriteAsync(buffer, 0, bytesRead);
+					}
+				}
 			}
 		}
 		private async Task<TcpClient> ConnectToFriendAsync()
@@ -172,7 +176,7 @@ namespace P2PFileTransfer
 			txtStatus.Text = "Status: Connected";
 			return client;
 		}
-		private async void btnConnect_Click(object sender, RoutedEventArgs e)
+		private async void ConnectToFriend()
 		{
 			try
 			{
@@ -191,7 +195,7 @@ namespace P2PFileTransfer
 				connectedClient = null;
 			}
 		}
-		private async void btnSendFile_Click(object sender, RoutedEventArgs e)
+		private async void SendFile()
 		{
 			try
 			{
@@ -201,10 +205,11 @@ namespace P2PFileTransfer
 				string filePath = openFileDialog.FileName;
 				string fileName = Path.GetFileName(filePath);
 
-				TcpClient client = connectedClient ?? await ConnectToFriendAsync(); // Use existing connection or create a new one
-				txtStatus.Text = "Status: Connected, sending file...";
+				if (connectedClient == null || !connectedClient.Connected)
+					connectedClient = await ConnectToFriendAsync();
 
-				NetworkStream stream = client.GetStream();
+				txtStatus.Text = "Sending file...";
+				NetworkStream stream = connectedClient.GetStream();
 
 				// Send a "send file" command
 				await stream.WriteAsync(new byte[] { 1 }, 0, 1);
@@ -246,6 +251,26 @@ namespace P2PFileTransfer
 				MessageBox.Show($"Error sending file: {ex.Message}");
 				connectedClient?.Close();
 				connectedClient = null;
+			}
+		}
+		private void Disconnect()
+		{
+			try
+			{
+				if (connectedClient == null || !connectedClient.Connected)
+				{
+					MessageBox.Show("Not connected!");
+					return;
+				}
+				connectedClient.Close();
+				connectedClient = null;
+				txtStatus.Text = "Status: Disconnected";
+				MessageBox.Show("Disconnected from friend.");
+			}
+			catch (Exception ex)
+			{
+				txtStatus.Text = "Error";
+				MessageBox.Show($"Disconnect error: {ex.Message}");
 			}
 		}
 		private async Task ExchangeEncryptionKeys(NetworkStream stream, bool isServer)

@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:P2PFileTransfer"
         mc:Ignorable="d"
-        Title="P2P File Transfer" Height="400" Width="400">
+        Title="P2P File Transfer" Height="480" Width="400">
     <Grid>
         <StackPanel Margin="10">
             <TextBlock Text="Your ID (Public Key): " HorizontalAlignment="Center" Margin="10"/>
@@ -18,6 +18,7 @@
             <TextBox x:Name="txtFriendId" Height="50" TextWrapping="Wrap" Margin="10,10,0,0"/>
             <Button x:Name="btnConnect" Content="Connect to Friend" Click="btnConnect_Click" Margin="10,10,0,0"/>
             <Button x:Name="btnSendFile" Content="Send File" Click="btnSendFile_Click" Margin="10,10,0,0"/>
+            <Button x:Name="btnDisconnect" Content="Disconnect" Click="btnDisconnect_Click" Margin="10,10,0,0"/>
             <TextBlock x:Name="txtStatus" Text="Status: Not Started" Margin="0,10,0,0" HorizontalAlignment="Center"/>
         </StackPanel>
     </Grid>
