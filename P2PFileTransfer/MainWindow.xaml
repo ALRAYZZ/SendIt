@@ -1,31 +1,36 @@
-﻿<Window x:Class="P2PFileTransfer.MainWindow"
+﻿<Window x:Class="SendIt.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:P2PFileTransfer"
+        xmlns:local="clr-namespace:SendIt"
         mc:Ignorable="d"
-        Title="P2P File Transfer" Height="700" Width="400">
+        Title="SendIt" Height="600" Width="400">
     <Grid>
         <StackPanel Margin="10">
-            <TextBlock Text="Your ID (Public Key): " HorizontalAlignment="Center" Margin="10"/>
-            <TextBox x:Name="txtYourId" IsReadOnly="True" Height="20" TextWrapping="NoWrap" Width="300"/>
-            <Button x:Name="btnGenerateId" Content="Generate ID" Click="btnGenerateId_Click" Margin="0,10,0,0" Width="200" Height="20"/>
-            <Button x:Name="btnStartServer" Content="Start Server" Click="btnStartServer_Click" Margin="0,10,0,0" Width="200" Height="30"/>
-            <TextBlock Text="Friend's IP:Port (e.g., 127.0.0.1:5000):" Margin="10,10,0,0"/>
-            <TextBox x:Name="txtFriendAddress" Text="127.0.0.1:5000" Margin="10"/>
-            <TextBlock Text="Friend's ID (Public Key):" Margin="10,10,0,0"/>
-            <TextBox x:Name="txtFriendId" Height="50" TextWrapping="Wrap" Margin="10,10,0,0"/>
-            <Button x:Name="btnConnect" Content="Connect to Friend" Click="btnConnect_Click" Margin="10,10,0,0" Width="200"/>
-            <TextBlock Text="Select Friend:" Margin="10,10,0,0"/>
-            <ComboBox x:Name="cbFriends" Margin="10" Width="200"/>
-            <Button x:Name="btnSendFile" Content="Send File" Click="btnSendFile_Click" Margin="10,10,0,0" Width="200"/>
-            <Button x:Name="btnDisconnect" Content="Disconnect" Click="btnDisconnect_Click" Margin="10,10,0,0" Width="200"/>
-            <ProgressBar x:Name="pbProgress" Height="20" Margin="10,10,0,0"/>
-            <TextBlock x:Name="txtStatus" Text="Status: Not Started" Margin="0,10,0,0" HorizontalAlignment="Center"/>
-            <TextBlock Text="Chat History:" Margin="10,10,0,0"/>
-            <TextBox x:Name="txtChat" Height="100" TextWrapping="Wrap" IsReadOnly="True" Margin="10,10,0,0"/>
-            <Button x:Name="btnSendMessage" Content="Send Message" Click="btnSendMessage_Click" Margin="10,10,0,0" Width="200"/>
+            <!-- Server Controls -->
+            <Button x:Name="StartServer" Content="Start Server" Click="StartServer_Click" 
+                    Margin="0,10,0,0" Width="200" Height="30"/>
+            <Button x:Name="StopServer" Content="Stop Server" Click="StopServer_Click" 
+                    Margin="0,10,0,0" Width="200" Height="30"/>
+
+            <!-- Connection Controls -->
+            <TextBlock Text="Friend's IP:Port (e.g., 127.0.0.1:5000):" Margin="0,20,0,5"/>
+            <TextBox x:Name="FriendAddress" Text="127.0.0.1:5000" Height="20" Margin="0,0,0,10"/>
+            <Button x:Name="Connect" Content="Connect to Friend" Click="Connect_Click" 
+                    Width="200" Height="30"/>
+
+            <!-- File and Message Controls -->
+            <Button x:Name="SendFile" Content="Send File" Click="SendFile_Click" 
+                    Margin="0,20,0,0" Width="200" Height="30"/>
+            <Button x:Name="SendMessage" Content="Send Message" Click="SendMessage_Click" 
+                    Margin="0,10,0,0" Width="200" Height="30"/>
+
+            <!-- Status and Chat -->
+            <TextBlock x:Name="StatusText" Text="Status: Not Started" 
+                       Margin="0,20,0,0" HorizontalAlignment="Center"/>
+            <TextBlock Text="Chat History:" Margin="0,20,0,5"/>
+            <TextBox x:Name="ChatText" Height="200" TextWrapping="Wrap" IsReadOnly="True"/>
         </StackPanel>
     </Grid>
 </Window>
