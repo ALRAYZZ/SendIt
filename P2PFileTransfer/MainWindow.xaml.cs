@@ -4,7 +4,6 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Windows;
-using STUN;
 
 
 namespace SendIt
@@ -54,16 +53,33 @@ namespace SendIt
 			{
 				while (isRunning)
 				{
+					// Server listens for incoming messages
 					UdpReceiveResult result = await udpServer.ReceiveAsync(); // Wait for message
 					byte[] data = result.Buffer; // Get message data
 					IPEndPoint remoteEndPoint = result.RemoteEndPoint; // Get sender's IP:Port
 
-
-					// UI updates must be done on the UI thread
 					Dispatcher.Invoke(() =>
 					{
 						StatusText.Text = $"Received {data.Length} from {remoteEndPoint}";
 					});
+
+					if (data.Length == 1 && data[0] == 1) // Connection request value as defined in Connect_Click
+					{
+						var accept = MessageBox.Show($"Accept connection from {remoteEndPoint}?",
+							"Connection Request", MessageBoxButton.YesNo);
+						byte[] response = new byte[] { (byte)(accept == MessageBoxResult.Yes ? 2 : 0) }; // If yes, send 2, else 0
+						await udpServer.SendAsync(response, response.Length, remoteEndPoint); // Send response
+
+						if (accept == MessageBoxResult.Yes)
+						{
+							Dispatcher.Invoke(() =>
+							{
+								StatusText.Text = $"Connected to {remoteEndPoint}";
+							});
+							// TODO: Save remoteEndPoint for sending later
+						}
+					}
+
 				}
 			}
 			catch (Exception ex)
@@ -117,12 +133,23 @@ namespace SendIt
 				udpClient = new UdpClient();
 				var remoteEndPoint = new IPEndPoint(IPAddress.Parse(ip), port);
 
+				// Client sends a test packet to the friend when connecting
 				StatusText.Text = $"Connecting to {FriendAddress.Text}...";
-				byte[] testPacket = new byte[] { 1 };
-				await udpClient.SendAsync(testPacket, testPacket.Length, remoteEndPoint);
+				byte[] testPacket = new byte[] { 1 }; // Connection request set by "1"
+				await udpClient.SendAsync(testPacket, testPacket.Length, remoteEndPoint); // We can also put "0" on the 2nd parameter, meanign we send the whole packet
 
-				StatusText.Text = $"Connection request sent to {FriendAddress.Text}";
-				MessageBox.Show("Connection request sent");
+				// Client starts listening after sending the connection request	
+				UdpReceiveResult response =  await udpClient.ReceiveAsync();
+				if (response.Buffer[0] == 2)
+				{
+					StatusText.Text = $"Connected to {FriendAddress.Text}!";
+					MessageBox.Show("Connected!");
+					// TODO: Start listenting for messages/files
+				}
+				else
+				{
+					throw new Exception("Connection refused");
+				}
 			}
 			catch (Exception ex)
 			{
