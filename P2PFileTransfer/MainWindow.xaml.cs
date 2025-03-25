@@ -1,10 +1,11 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
+using STUN;
+
 
 namespace SendIt
 {
@@ -14,13 +15,14 @@ namespace SendIt
 		private TcpClient client;
 		private NetworkStream stream;
 		private bool isRunning;
+		private readonly HttpClient httpClient = new HttpClient();
+		private UdpClient udpServer;
+		private UdpClient udpClient;
 
 		public MainWindow()
 		{
 			InitializeComponent();
 		}
-
-		// Start listening for connections
 		private async void StartServer_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -31,19 +33,13 @@ namespace SendIt
 					return;
 				}
 
-				server = new TcpListener(IPAddress.Any, 5000);
-				server.Start();
+				string endpoint = await GetPublicIp();
+				int port = 5000;
+				udpServer = new UdpClient(port);
 				isRunning = true;
-				StatusText.Text = "Server started, waiting for connections...";
+				StatusText.Text = $"Server started, Your ID: {endpoint}";
 
-				await Task.Run(async () =>
-				{
-					while (isRunning)
-					{
-						TcpClient newClient = await server.AcceptTcpClientAsync();
-						HandleConnection(newClient);
-					}
-				});
+				await ListenForUdpMessages(); // Start listenting
 			}
 			catch (Exception ex)
 			{
@@ -52,26 +48,57 @@ namespace SendIt
 				ShutdownServer();
 			}
 		}
+		private async Task ListenForUdpMessages()
+		{
+			try
+			{
+				while (isRunning)
+				{
+					UdpReceiveResult result = await udpServer.ReceiveAsync(); // Wait for message
+					byte[] data = result.Buffer; // Get message data
+					IPEndPoint remoteEndPoint = result.RemoteEndPoint; // Get sender's IP:Port
 
-		// Stop the server
+
+					// UI updates must be done on the UI thread
+					Dispatcher.Invoke(() =>
+					{
+						StatusText.Text = $"Received {data.Length} from {remoteEndPoint}";
+					});
+				}
+			}
+			catch (Exception ex)
+			{
+				Dispatcher.Invoke(() =>
+				{
+					StatusText.Text = $"Listening stopped: " + ex.Message;
+					ShutdownServer();
+				});
+			}
+		}
 		private void StopServer_Click(object sender, RoutedEventArgs e)
 		{
 			ShutdownServer();
 			StatusText.Text = "Server stopped";
 			MessageBox.Show("Server stopped");
 		}
-
+		private async void GetIp_Click(object sender, RoutedEventArgs e)
+		{
+			string endpoint = await GetPublicIp();
+			MessageBox.Show($"Your public IP:Port is {endpoint}");
+		}
 		private void ShutdownServer()
 		{
 			isRunning = false;
+			udpServer?.Close();
+			udpServer = null;
+
+
 			server?.Stop();
 			client?.Close();
 			stream?.Close();
 			client = null;
 			stream = null;
 		}
-
-		// Connect to a friend
 		private async void Connect_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -82,42 +109,29 @@ namespace SendIt
 					return;
 				}
 
+				// Parse the friend's IP and port from the text box
 				string[] parts = FriendAddress.Text.Split(':');
 				string ip = parts[0];
 				int port = int.Parse(parts[1]);
+				
+				udpClient = new UdpClient();
+				var remoteEndPoint = new IPEndPoint(IPAddress.Parse(ip), port);
 
-				client = new TcpClient();
-				await client.ConnectAsync(ip, port);
-				stream = client.GetStream();
+				StatusText.Text = $"Connecting to {FriendAddress.Text}...";
+				byte[] testPacket = new byte[] { 1 };
+				await udpClient.SendAsync(testPacket, testPacket.Length, remoteEndPoint);
 
-				StatusText.Text = "Requesting connection...";
-				await stream.WriteAsync(new byte[] { 1 }, 0, 1); // Connection request
-
-				byte[] response = new byte[1];
-				await stream.ReadAsync(response, 0, 1);
-				if (response[0] == 1)
-				{
-					StatusText.Text = $"Connected to {FriendAddress.Text}";
-					MessageBox.Show("Connection accepted!");
-					ListenForMessages();
-				}
-				else
-				{
-					throw new Exception("Connection rejected");
-				}
+				StatusText.Text = $"Connection request sent to {FriendAddress.Text}";
+				MessageBox.Show("Connection request sent");
 			}
 			catch (Exception ex)
 			{
 				StatusText.Text = "Connection failed";
 				MessageBox.Show($"Connection error: {ex.Message}");
-				client?.Close();
-				stream?.Close();
-				client = null;
-				stream = null;
+				udpClient?.Close();
+				udpClient = null;
 			}
 		}
-
-		// Handle incoming connections
 		private async void HandleConnection(TcpClient newClient)
 		{
 			try
@@ -158,8 +172,6 @@ namespace SendIt
 				newClient.Close();
 			}
 		}
-
-		// Listen for incoming messages/files
 		private async void ListenForMessages()
 		{
 			try
@@ -192,8 +204,6 @@ namespace SendIt
 				});
 			}
 		}
-
-		// Send a file (without request/acceptance)
 		private async void SendFile_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -232,8 +242,6 @@ namespace SendIt
 				MessageBox.Show($"Send error: {ex.Message}");
 			}
 		}
-
-		// Receive a file (without acceptance prompt)
 		private async Task ReceiveFile()
 		{
 			try
@@ -276,8 +284,6 @@ namespace SendIt
 				Dispatcher.Invoke(() => StatusText.Text = $"Receive file error: {ex.Message}");
 			}
 		}
-
-		// Send a message
 		private async void SendMessage_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -306,8 +312,6 @@ namespace SendIt
 				MessageBox.Show($"Message error: {ex.Message}");
 			}
 		}
-
-		// Receive a message
 		private async Task ReceiveMessage()
 		{
 			byte[] lengthBytes = new byte[4];
@@ -322,6 +326,20 @@ namespace SendIt
 				ChatText.Text += $"\nFriend: {message}";
 				StatusText.Text = "Message received";
 			});
+		}
+		private async Task<string> GetPublicIp()
+		{
+			try
+			{
+				string ip = await httpClient.GetStringAsync("https://api.ipify.org");
+				int port = 5000;
+				return $"{ip}:{port}";	
+			}
+			catch (Exception ex)
+			{
+				throw new Exception($"Failed to get public IP: {ex.Message}");
+			}
+
 		}
 	}
 }

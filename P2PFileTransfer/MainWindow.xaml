@@ -13,6 +13,7 @@
                     Margin="0,10,0,0" Width="200" Height="30"/>
             <Button x:Name="StopServer" Content="Stop Server" Click="StopServer_Click" 
                     Margin="0,10,0,0" Width="200" Height="30"/>
+            <Button x:Name="GetIp" Content="Get IP" Click="GetIp_Click" Margin="0,30,0,0" Width="100" Height="30" />
 
             <!-- Connection Controls -->
             <TextBlock Text="Friend's IP:Port (e.g., 127.0.0.1:5000):" Margin="0,20,0,5"/>
