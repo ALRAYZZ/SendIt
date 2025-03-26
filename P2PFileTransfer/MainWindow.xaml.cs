@@ -17,6 +17,7 @@ namespace SendIt
 		private readonly HttpClient httpClient = new HttpClient();
 		private UdpClient udpServer;
 		private UdpClient udpClient;
+		private IPEndPoint connectedPeer;
 
 		public MainWindow()
 		{
@@ -38,7 +39,7 @@ namespace SendIt
 				isRunning = true;
 				StatusText.Text = $"Server started, Your ID: {endpoint}";
 
-				await ListenForUdpMessages(); // Start listenting
+				await ListenForUdpMessages(udpServer); // Start listenting
 			}
 			catch (Exception ex)
 			{
@@ -47,23 +48,18 @@ namespace SendIt
 				ShutdownServer();
 			}
 		}
-		private async Task ListenForUdpMessages()
+		private async Task ListenForUdpMessages(UdpClient listener) // Both server and client can listen for messages
 		{
 			try
 			{
 				while (isRunning)
 				{
 					// Server listens for incoming messages
-					UdpReceiveResult result = await udpServer.ReceiveAsync(); // Wait for message
+					UdpReceiveResult result = await listener.ReceiveAsync(); // Wait for message
 					byte[] data = result.Buffer; // Get message data
 					IPEndPoint remoteEndPoint = result.RemoteEndPoint; // Get sender's IP:Port
 
-					Dispatcher.Invoke(() =>
-					{
-						StatusText.Text = $"Received {data.Length} from {remoteEndPoint}";
-					});
-
-					if (data.Length == 1 && data[0] == 1) // Connection request value as defined in Connect_Click
+					if (listener == udpServer && data.Length == 1 && data[0] == 1) // Connection request value as defined in Connect_Click only for server
 					{
 						var accept = MessageBox.Show($"Accept connection from {remoteEndPoint}?",
 							"Connection Request", MessageBoxButton.YesNo);
@@ -72,12 +68,23 @@ namespace SendIt
 
 						if (accept == MessageBoxResult.Yes)
 						{
+							// Save the connected peer for identifying the sender
+							connectedPeer = remoteEndPoint;
 							Dispatcher.Invoke(() =>
 							{
 								StatusText.Text = $"Connected to {remoteEndPoint}";
 							});
 							// TODO: Save remoteEndPoint for sending later
 						}
+					}
+					else if (data.Length > 1 && data[0] == 3)
+					{
+						string message = Encoding.UTF8.GetString(data, 1, data.Length - 1);
+						Dispatcher.Invoke(() =>
+						{
+							ChatText.Text += $"\nFriend: {message}";
+							StatusText.Text = "Message received";
+						});
 					}
 
 				}
@@ -131,20 +138,21 @@ namespace SendIt
 				int port = int.Parse(parts[1]);
 				
 				udpClient = new UdpClient();
-				var remoteEndPoint = new IPEndPoint(IPAddress.Parse(ip), port);
+				connectedPeer = new IPEndPoint(IPAddress.Parse(ip), port);
 
 				// Client sends a test packet to the friend when connecting
 				StatusText.Text = $"Connecting to {FriendAddress.Text}...";
 				byte[] testPacket = new byte[] { 1 }; // Connection request set by "1"
-				await udpClient.SendAsync(testPacket, testPacket.Length, remoteEndPoint); // We can also put "0" on the 2nd parameter, meanign we send the whole packet
+				await udpClient.SendAsync(testPacket, testPacket.Length, connectedPeer); // We can also put "0" on the 2nd parameter, meanign we send the whole packet
 
-				// Client starts listening after sending the connection request	
+				// Client starts listening after sending the connection request to enable bidirectional communication
 				UdpReceiveResult response =  await udpClient.ReceiveAsync();
-				if (response.Buffer[0] == 2)
+				if (response.Buffer[0] == 2) // 2 == Request accepted by peer
 				{
+					isRunning = true;
 					StatusText.Text = $"Connected to {FriendAddress.Text}!";
 					MessageBox.Show("Connected!");
-					// TODO: Start listenting for messages/files
+					await ListenForUdpMessages(udpClient); // Start listening for messages
 				}
 				else
 				{
@@ -157,6 +165,7 @@ namespace SendIt
 				MessageBox.Show($"Connection error: {ex.Message}");
 				udpClient?.Close();
 				udpClient = null;
+				connectedPeer = null;
 			}
 		}
 		private async void HandleConnection(TcpClient newClient)
@@ -315,7 +324,14 @@ namespace SendIt
 		{
 			try
 			{
-				if (client == null || !client.Connected)
+				if (connectedPeer == null)
+				{
+					MessageBox.Show("Not connected!");
+					return;
+				}
+
+				UdpClient udpConnection = udpServer ?? udpClient;
+				if (udpConnection == null)
 				{
 					MessageBox.Show("Not connected!");
 					return;
@@ -324,12 +340,12 @@ namespace SendIt
 				string message = Microsoft.VisualBasic.Interaction.InputBox("Enter message:", "Send Message");
 				if (string.IsNullOrEmpty(message)) return;
 
-				byte[] data = Encoding.UTF8.GetBytes(message);
-				await stream.WriteAsync(new byte[] { 3 }, 0, 1); // Message command
-				await stream.WriteAsync(BitConverter.GetBytes(data.Length), 0, 4);
-				await stream.WriteAsync(data, 0, data.Length);
-				await stream.FlushAsync();
+				byte[] messageBytes = Encoding.UTF8.GetBytes(message); // Convert message to bytes
+				byte[] packet = new byte[messageBytes.Length + 1]; // Create packet with message length + 1 for command
+				packet[0] = 3; // Message command
+				Array.Copy(messageBytes, 0, packet, 1, messageBytes.Length); // Combine command and message
 
+				await udpConnection.SendAsync(packet, packet.Length, connectedPeer); // Send message
 				ChatText.Dispatcher.Invoke(() => ChatText.Text += $"\nYou: {message}");
 				StatusText.Text = "Message sent!";
 			}
