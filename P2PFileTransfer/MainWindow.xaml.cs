@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -10,14 +11,14 @@ namespace SendIt
 {
 	public partial class MainWindow : Window
 	{
-		private TcpListener server;
-		private TcpClient client;
+
 		private NetworkStream stream;
 		private bool isRunning;
 		private readonly HttpClient httpClient = new HttpClient();
 		private UdpClient udpServer;
 		private UdpClient udpClient;
 		private IPEndPoint connectedPeer;
+		private readonly ConcurrentQueue<UdpReceiveResult> packetQueue = new ConcurrentQueue<UdpReceiveResult>();
 
 		public MainWindow()
 		{
@@ -48,6 +49,42 @@ namespace SendIt
 				ShutdownServer();
 			}
 		}
+		private void StopServer_Click(object sender, RoutedEventArgs e)
+		{
+			ShutdownServer();
+			StatusText.Text = "Server stopped";
+			MessageBox.Show("Server stopped");
+		}
+		private async void GetIp_Click(object sender, RoutedEventArgs e)
+		{
+			string endpoint = await GetPublicIp();
+			MessageBox.Show($"Your public IP:Port is {endpoint}");
+		}
+		private void ShutdownServer()
+		{
+			isRunning = false;
+			udpServer?.Close();
+			udpServer = null;
+			stream?.Close();
+			stream = null;
+		}
+		private async Task<string> GetPublicIp()
+		{
+			try
+			{
+				string ip = await httpClient.GetStringAsync("https://api.ipify.org");
+				int port = 5000;
+				return $"{ip}:{port}";
+			}
+			catch (Exception ex)
+			{
+				throw new Exception($"Failed to get public IP: {ex.Message}");
+			}
+
+		}
+
+
+		// Central Message Dispatcher
 		private async Task ListenForUdpMessages(UdpClient listener) // Both server and client can listen for messages
 		{
 			try
@@ -58,6 +95,14 @@ namespace SendIt
 					UdpReceiveResult result = await listener.ReceiveAsync(); // Wait for message
 					byte[] data = result.Buffer; // Get message data
 					IPEndPoint remoteEndPoint = result.RemoteEndPoint; // Get sender's IP:Port
+					Dispatcher.Invoke(() => StatusText.Text = $"Received packet: {data[0]}");
+
+					if (data[0] == 5)
+					{
+						packetQueue.Enqueue(result);
+						Dispatcher.Invoke(() => StatusText.Text += " (queued for ACK)");
+						continue;
+					}
 
 					if (listener == udpServer && data.Length == 1 && data[0] == 1) // Connection request value as defined in Connect_Click only for server
 					{
@@ -77,8 +122,9 @@ namespace SendIt
 							// TODO: Save remoteEndPoint for sending later
 						}
 					}
-					else if (data.Length > 1 && data[0] == 3)
+					else if (data.Length > 1 && data[0] == 3) // Message command
 					{
+						// We could refactor this to a method of Receiving Message
 						string message = Encoding.UTF8.GetString(data, 1, data.Length - 1);
 						Dispatcher.Invoke(() =>
 						{
@@ -86,7 +132,17 @@ namespace SendIt
 							StatusText.Text = "Message received";
 						});
 					}
-
+					else if (data[0] == 2) // File command
+					{
+						await ReceiveFile(listener);
+					}
+					else
+					{
+						Dispatcher.Invoke(() =>
+						{
+							StatusText.Text += " (unhandled)";
+						});
+					}
 				}
 			}
 			catch (Exception ex)
@@ -98,30 +154,8 @@ namespace SendIt
 				});
 			}
 		}
-		private void StopServer_Click(object sender, RoutedEventArgs e)
-		{
-			ShutdownServer();
-			StatusText.Text = "Server stopped";
-			MessageBox.Show("Server stopped");
-		}
-		private async void GetIp_Click(object sender, RoutedEventArgs e)
-		{
-			string endpoint = await GetPublicIp();
-			MessageBox.Show($"Your public IP:Port is {endpoint}");
-		}
-		private void ShutdownServer()
-		{
-			isRunning = false;
-			udpServer?.Close();
-			udpServer = null;
 
-
-			server?.Stop();
-			client?.Close();
-			stream?.Close();
-			client = null;
-			stream = null;
-		}
+		// Senders and Receivers
 		private async void Connect_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -136,7 +170,7 @@ namespace SendIt
 				string[] parts = FriendAddress.Text.Split(':');
 				string ip = parts[0];
 				int port = int.Parse(parts[1]);
-				
+
 				udpClient = new UdpClient();
 				connectedPeer = new IPEndPoint(IPAddress.Parse(ip), port);
 
@@ -146,7 +180,7 @@ namespace SendIt
 				await udpClient.SendAsync(testPacket, testPacket.Length, connectedPeer); // We can also put "0" on the 2nd parameter, meanign we send the whole packet
 
 				// Client starts listening after sending the connection request to enable bidirectional communication
-				UdpReceiveResult response =  await udpClient.ReceiveAsync();
+				UdpReceiveResult response = await udpClient.ReceiveAsync();
 				if (response.Buffer[0] == 2) // 2 == Request accepted by peer
 				{
 					isRunning = true;
@@ -168,158 +202,6 @@ namespace SendIt
 				connectedPeer = null;
 			}
 		}
-		private async void HandleConnection(TcpClient newClient)
-		{
-			try
-			{
-				NetworkStream newStream = newClient.GetStream();
-				string remoteAddress = ((IPEndPoint)newClient.Client.RemoteEndPoint).ToString();
-
-				byte[] command = new byte[1];
-				await newStream.ReadAsync(command, 0, 1);
-
-				if (command[0] == 1) // Connection request
-				{
-					Dispatcher.Invoke(() =>
-					{
-						var result = MessageBox.Show($"Accept connection from {remoteAddress}?",
-							"Connection Request", MessageBoxButton.YesNo);
-						byte[] response = new byte[] { (byte)(result == MessageBoxResult.Yes ? 1 : 0) };
-						newStream.Write(response, 0, 1);
-						newStream.Flush();
-
-						if (result == MessageBoxResult.Yes)
-						{
-							client = newClient;
-							stream = newStream;
-							StatusText.Text = $"Connected to {remoteAddress}";
-							ListenForMessages();
-						}
-						else
-						{
-							newClient.Close();
-						}
-					});
-				}
-			}
-			catch (Exception ex)
-			{
-				Dispatcher.Invoke(() => StatusText.Text = $"Connection error: {ex.Message}");
-				newClient.Close();
-			}
-		}
-		private async void ListenForMessages()
-		{
-			try
-			{
-				while (client.Connected)
-				{
-					byte[] command = new byte[1];
-					int bytesRead = await stream.ReadAsync(command, 0, 1);
-					if (bytesRead == 0) throw new Exception("Disconnected");
-
-					if (command[0] == 2) // File
-					{
-						await ReceiveFile();
-					}
-					else if (command[0] == 3) // Message
-					{
-						await ReceiveMessage();
-					}
-				}
-			}
-			catch (Exception ex)
-			{
-				Dispatcher.Invoke(() =>
-				{
-					StatusText.Text = $"Disconnected: {ex.Message}";
-					client?.Close();
-					stream?.Close();
-					client = null;
-					stream = null;
-				});
-			}
-		}
-		private async void SendFile_Click(object sender, RoutedEventArgs e)
-		{
-			try
-			{
-				if (client == null || !client.Connected)
-				{
-					MessageBox.Show("Not connected!");
-					return;
-				}
-
-				Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
-				if (dlg.ShowDialog() != true) return;
-
-				string filePath = dlg.FileName;
-				string fileName = Path.GetFileName(filePath);
-				byte[] fileData = File.ReadAllBytes(filePath);
-
-				StatusText.Text = "Sending file...";
-				await stream.WriteAsync(new byte[] { 2 }, 0, 1); // File command
-
-				// Send file name
-				byte[] nameBytes = Encoding.UTF8.GetBytes(fileName);
-				await stream.WriteAsync(BitConverter.GetBytes(nameBytes.Length), 0, 4);
-				await stream.WriteAsync(nameBytes, 0, nameBytes.Length);
-
-				// Send file size and data directly (no waiting for response)
-				await stream.WriteAsync(BitConverter.GetBytes(fileData.Length), 0, 4);
-				await stream.WriteAsync(fileData, 0, fileData.Length);
-				await stream.FlushAsync();
-
-				StatusText.Text = "File sent successfully!";
-			}
-			catch (Exception ex)
-			{
-				StatusText.Text = "File send failed";
-				MessageBox.Show($"Send error: {ex.Message}");
-			}
-		}
-		private async Task ReceiveFile()
-		{
-			try
-			{
-				// Get file name
-				byte[] nameLengthBytes = new byte[4];
-				int bytesRead = await stream.ReadAsync(nameLengthBytes, 0, 4);
-				if (bytesRead != 4) throw new Exception("Failed to read file name length");
-				int nameLength = BitConverter.ToInt32(nameLengthBytes, 0);
-				byte[] nameBytes = new byte[nameLength];
-				bytesRead = await stream.ReadAsync(nameBytes, 0, nameLength);
-				if (bytesRead != nameLength) throw new Exception("Failed to read file name");
-				string fileName = Encoding.UTF8.GetString(nameBytes);
-
-				Dispatcher.Invoke(() => StatusText.Text = $"Receiving file: {fileName}");
-
-				// Get file size and data
-				byte[] sizeBytes = new byte[4];
-				bytesRead = await stream.ReadAsync(sizeBytes, 0, 4);
-				if (bytesRead != 4) throw new Exception("Failed to read file size");
-				int fileSize = BitConverter.ToInt32(sizeBytes, 0);
-				byte[] fileData = new byte[fileSize];
-				int totalRead = 0;
-
-				while (totalRead < fileSize)
-				{
-					int read = await stream.ReadAsync(fileData, totalRead, fileSize - totalRead);
-					if (read == 0) throw new Exception("Connection lost during file transfer");
-					totalRead += read;
-					Dispatcher.Invoke(() =>
-						StatusText.Text = $"Receiving file... ({totalRead}/{fileSize} bytes)");
-				}
-
-				string path = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
-				File.WriteAllBytes(path, fileData);
-				Dispatcher.Invoke(() => StatusText.Text = $"File saved to {path}");
-			}
-			catch (Exception ex)
-			{
-				Dispatcher.Invoke(() => StatusText.Text = $"Receive file error: {ex.Message}");
-			}
-		}
 		private async void SendMessage_Click(object sender, RoutedEventArgs e)
 		{
 			try
@@ -330,8 +212,8 @@ namespace SendIt
 					return;
 				}
 
-				UdpClient udpConnection = udpServer ?? udpClient;
-				if (udpConnection == null)
+				UdpClient udpInstance = udpServer ?? udpClient;
+				if (udpInstance == null)
 				{
 					MessageBox.Show("Not connected!");
 					return;
@@ -345,7 +227,7 @@ namespace SendIt
 				packet[0] = 3; // Message command
 				Array.Copy(messageBytes, 0, packet, 1, messageBytes.Length); // Combine command and message
 
-				await udpConnection.SendAsync(packet, packet.Length, connectedPeer); // Send message
+				await udpInstance.SendAsync(packet, packet.Length, connectedPeer); // Send message
 				ChatText.Dispatcher.Invoke(() => ChatText.Text += $"\nYou: {message}");
 				StatusText.Text = "Message sent!";
 			}
@@ -355,34 +237,203 @@ namespace SendIt
 				MessageBox.Show($"Message error: {ex.Message}");
 			}
 		}
-		private async Task ReceiveMessage()
-		{
-			byte[] lengthBytes = new byte[4];
-			await stream.ReadAsync(lengthBytes, 0, 4);
-			int length = BitConverter.ToInt32(lengthBytes, 0);
-			byte[] data = new byte[length];
-			await stream.ReadAsync(data, 0, length);
-			string message = Encoding.UTF8.GetString(data);
-
-			Dispatcher.Invoke(() =>
-			{
-				ChatText.Text += $"\nFriend: {message}";
-				StatusText.Text = "Message received";
-			});
-		}
-		private async Task<string> GetPublicIp()
+		private async void SendFile_Click(object sender, RoutedEventArgs e)
 		{
 			try
 			{
-				string ip = await httpClient.GetStringAsync("https://api.ipify.org");
-				int port = 5000;
-				return $"{ip}:{port}";	
+				if (connectedPeer == null || (udpServer ?? udpClient) == null)
+				{
+					MessageBox.Show("Not connected!");
+					return;
+				}
+
+				UdpClient udpInstance = udpServer ?? udpClient;
+
+
+				Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
+				if (dlg.ShowDialog() != true) return;
+
+				string filePath = dlg.FileName;
+				string fileName = Path.GetFileName(filePath);
+				byte[] fileData = File.ReadAllBytes(filePath); // For now, load all; we'll stream later
+
+				StatusText.Text = $"Sending file...";
+
+				// Send file metadata
+				byte[] nameBytes = Encoding.UTF8.GetBytes(fileName);
+				byte[] metaPacket = new byte[9 + nameBytes.Length];
+				metaPacket[0] = 2; // File command
+				BitConverter.GetBytes(nameBytes.Length).CopyTo(metaPacket, 1); // File name length
+				BitConverter.GetBytes(fileData.Length).CopyTo(metaPacket, 5); // File size
+				nameBytes.CopyTo(metaPacket, 9); // File name
+
+				await SendWithRetry(udpInstance, metaPacket, connectedPeer, expectAck: true);
+				StatusText.Text = "Sent metadata";
+
+				// Send file in chunks
+				const int chunkSize = 8192; // 8KB
+				int totalChunks = (int)Math.Ceiling((double)fileData.Length / chunkSize); // Checking how many chunks we need
+				for (int i = 0; i < totalChunks; i++)
+				{
+					int offset = i * chunkSize; // Sets the bytes position to start reading from, as we send, we need to keep track what bytes we've sent
+					int length = Math.Min(chunkSize, fileData.Length - offset); // This is for the last chunk, if it's less than 8KB
+					byte[] chunk = new byte[length + 5];
+					chunk[0] = 4; // File chunk command
+					BitConverter.GetBytes(i).CopyTo(chunk, 1); // Chunk index, helps receiver know the order of the chunks Ex: chunk 0, chunk 1, chunk 2...
+					Array.Copy(fileData, offset, chunk, 5, length); // Copy a section of the file data to the chunk
+
+					await SendWithRetry(udpInstance, chunk, connectedPeer);
+					StatusText.Text = $"Sending file... ({i + 1}/{totalChunks} bytes)";
+				}
+				StatusText.Text = "File sent!";
 			}
 			catch (Exception ex)
 			{
-				throw new Exception($"Failed to get public IP: {ex.Message}");
+				StatusText.Text = "File send failed";
+				MessageBox.Show($"Send error: {ex.Message}");
 			}
+		}
+		private async Task ReceiveFile(UdpClient listener)
+		{
+			try
+			{
+				// Buffer packets until we get metadata
+				List<UdpReceiveResult> packetBuffer = new List<UdpReceiveResult>();
+				byte[] metaData = null;
 
+				using (var cts = new CancellationTokenSource(10000))
+				{
+					while (metaData == null)
+					{
+						var receiveTask = listener.ReceiveAsync();
+						var completedTask = await Task.WhenAny(receiveTask, Task.Delay(10000, cts.Token));
+
+						if (completedTask == receiveTask)
+						{
+							UdpReceiveResult result = await receiveTask;
+							Dispatcher.Invoke(() => StatusText.Text = $"Received packet: {result.Buffer[0]}");
+
+							if (result.Buffer[0] == 2)
+							{
+								metaData = result.Buffer;
+								byte[] ack = new byte[5];
+								ack[0] = 5;
+								BitConverter.GetBytes(-1).CopyTo(ack, 1);
+								await listener.SendAsync(ack, ack.Length, connectedPeer);
+							}
+							else if (result.Buffer[0] == 4)
+							{
+								packetBuffer.Add(result);
+							}
+						}
+						else
+						{
+							throw new TimeoutException("Metadata receive timeout");
+						}
+					} 
+				}
+
+				int nameLenght = BitConverter.ToInt32(metaData, 1);
+				int fileSize = BitConverter.ToInt32(metaData, 5);
+				string fileName = Encoding.UTF8.GetString(metaData, 9, nameLenght);
+
+				Dispatcher.Invoke(() => StatusText.Text = $"Receiving file: {fileName}");
+
+				// Receive file in chunks
+				byte[] fileData = new byte[fileSize];
+				int totalReceived = 0;
+				Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
+
+				// Process buffered packets
+				foreach (var buffered in packetBuffer.Where(p => p.Buffer[0] == 4))
+				{
+					totalReceived = await ProcessChunk(buffered.Buffer, chunks, fileData, totalReceived, listener);
+				}
+
+				while (totalReceived < fileSize)
+				{
+					UdpReceiveResult chunkResult = await listener.ReceiveAsync();
+					if (chunkResult.Buffer[0] == 4)
+					{
+						totalReceived = await ProcessChunk(chunkResult.Buffer, chunks, fileData, totalReceived, listener);
+					}
+				}
+
+				string path = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
+				File.WriteAllBytes(path, fileData);
+				Dispatcher.Invoke(() => StatusText.Text = $"File received: {path}");
+			}
+			catch (Exception ex)
+			{
+				Dispatcher.Invoke(() => StatusText.Text = $"Receive file error: {ex.Message}");
+			}
+		}
+
+
+
+		private async Task SendWithRetry(UdpClient udpInstance, byte[] data, IPEndPoint endpoint, int maxRetries = 3, bool expectAck = true)
+		{
+			for (int attempt = 0; attempt < maxRetries; attempt++)
+			{
+				try
+				{
+					// Send the data
+					await udpInstance.SendAsync(data, data.Length, endpoint);
+					if (!expectAck) return;	
+
+					int seqNum = data[0] == 2 ? -1 : BitConverter.ToInt32(data, 1);
+					int waitTime = 0;
+					const int maxWaitTime = 5000;
+
+					while (waitTime < maxWaitTime)
+					{
+						if (packetQueue.TryDequeue(out UdpReceiveResult ack))
+						{
+							if (ack.Buffer.Length == 5 && ack.Buffer[0] == 5 && BitConverter.ToInt32(ack.Buffer, 1) == seqNum)
+							{
+								Dispatcher.Invoke(() => StatusText.Text = $"Received ACK for {seqNum}");
+								return;
+							}
+						}
+						await Task.Delay(100);
+						waitTime += 100;
+					}
+					throw new TimeoutException("No valid ACK received");
+				}
+				catch (Exception ex)
+				{
+					if (attempt == maxRetries - 1)
+					{
+						StatusText.Text = $"Final retry failed: {ex.Message}";
+						throw;
+					}
+					await Task.Delay(1000 * (attempt + 1)); // Exponential backoff
+				}
+			}
+		}
+		private async Task<int> ProcessChunk(byte[] chunkData, Dictionary<int, byte[]> chunks, byte[] fileData, int totalReceived, UdpClient listener)
+		{
+			int seqNum = BitConverter.ToInt32(chunkData, 1);
+			int chunkLength = chunkData.Length - 5;
+
+			if (!chunks.ContainsKey(seqNum))
+			{
+				byte[] chunkContent = new byte[chunkLength];
+				Array.Copy(chunkData, 5, chunkContent, 0, chunkLength);
+				chunks[seqNum] = chunkContent;
+
+				int position = seqNum * 8192;
+				Array.Copy(chunkContent, 0, fileData, position, chunkLength);
+				totalReceived += chunkLength;
+
+				byte[] ack = new byte[5];
+				ack[0] = 5;
+				BitConverter.GetBytes(seqNum).CopyTo(ack, 1);
+				await listener.SendAsync(ack, ack.Length, connectedPeer);
+
+				Dispatcher.Invoke(() => StatusText.Text = $"Sent ACK for chunk {seqNum}, total: {totalReceived}/{fileData.Length}");
+			}
+			return totalReceived;
 		}
 	}
 }
