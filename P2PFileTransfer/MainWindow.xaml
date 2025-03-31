@@ -9,17 +9,18 @@
     <Grid>
         <StackPanel Margin="10">
             <!-- Server Controls -->
-            <Button x:Name="StartServer" Content="Start Server" Click="StartServer_Click" 
-                    Margin="0,10,0,0" Width="200" Height="30"/>
-            <Button x:Name="StopServer" Content="Stop Server" Click="StopServer_Click" 
-                    Margin="0,10,0,0" Width="200" Height="30"/>
             <Button x:Name="GetIp" Content="Get IP" Click="GetIp_Click" Margin="0,30,0,0" Width="100" Height="30" />
 
             <!-- Connection Controls -->
             <TextBlock Text="Friend's IP:Port (e.g., 127.0.0.1:5000):" Margin="0,20,0,5"/>
-            <TextBox x:Name="FriendAddress" Text="127.0.0.1:5000" Height="20" Margin="0,0,0,10"/>
+            <TextBox x:Name="FriendAddress" Text="127.0.0.1:5001" Height="20" Margin="0,0,0,10"/>
+            <TextBlock Text="Select Role:" Margin="0,0,0,5"/>
+            <ComboBox x:Name="PeerRole" Width="200" Height="20" Margin="0,0,0,10">
+                <ComboBoxItem Content="PEER1" IsSelected="True"/>
+                <ComboBoxItem Content="PEER2"/>
+            </ComboBox>
             <Button x:Name="Connect" Content="Connect to Friend" Click="Connect_Click" 
-                    Width="200" Height="30"/>
+                    Width="150" Height="30"/>
 
             <!-- File and Message Controls -->
             <Button x:Name="SendFile" Content="Send File" Click="SendFile_Click" 

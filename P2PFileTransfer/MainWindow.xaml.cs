@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 
 
 namespace SendIt
@@ -18,62 +19,24 @@ namespace SendIt
 		private UdpClient udpServer;
 		private UdpClient udpClient;
 		private IPEndPoint connectedPeer;
+		private readonly string rendezvousServer = "http://localhost:5001";
 		private readonly ConcurrentQueue<UdpReceiveResult> packetQueue = new ConcurrentQueue<UdpReceiveResult>();
 
 		public MainWindow()
 		{
 			InitializeComponent();
 		}
-		private async void StartServer_Click(object sender, RoutedEventArgs e)
-		{
-			try
-			{
-				if (isRunning)
-				{
-					MessageBox.Show("Server already running!");
-					return;
-				}
-
-				string endpoint = await GetPublicIp();
-				int port = 5000;
-				udpServer = new UdpClient(port);
-				isRunning = true;
-				StatusText.Text = $"Server started, Your ID: {endpoint}";
-
-				await ListenForUdpMessages(udpServer); // Start listenting
-			}
-			catch (Exception ex)
-			{
-				StatusText.Text = "Error starting server";
-				MessageBox.Show($"Server error: {ex.Message}");
-				ShutdownServer();
-			}
-		}
-		private void StopServer_Click(object sender, RoutedEventArgs e)
-		{
-			ShutdownServer();
-			StatusText.Text = "Server stopped";
-			MessageBox.Show("Server stopped");
-		}
 		private async void GetIp_Click(object sender, RoutedEventArgs e)
 		{
 			string endpoint = await GetPublicIp();
 			MessageBox.Show($"Your public IP:Port is {endpoint}");
-		}
-		private void ShutdownServer()
-		{
-			isRunning = false;
-			udpServer?.Close();
-			udpServer = null;
-			stream?.Close();
-			stream = null;
 		}
 		private async Task<string> GetPublicIp()
 		{
 			try
 			{
 				string ip = await httpClient.GetStringAsync("https://api.ipify.org");
-				int port = 5000;
+				int port = udpClient?.Client.LocalEndPoint is IPEndPoint ep ? ep.Port : 5000; // Use bound port or default 5000
 				return $"{ip}:{port}";
 			}
 			catch (Exception ex)
@@ -150,7 +113,6 @@ namespace SendIt
 				Dispatcher.Invoke(() =>
 				{
 					StatusText.Text = $"Listening stopped: " + ex.Message;
-					ShutdownServer();
 				});
 			}
 		}
@@ -162,36 +124,53 @@ namespace SendIt
 			{
 				if (string.IsNullOrEmpty(FriendAddress.Text))
 				{
-					MessageBox.Show("Enter friend's IP:Port");
+					MessageBox.Show("Enter rendezvous server IP:Port");
 					return;
 				}
-
-				// Parse the friend's IP and port from the text box
+				// Parse rendezvous server address from input
 				string[] parts = FriendAddress.Text.Split(':');
-				string ip = parts[0];
-				int port = int.Parse(parts[1]);
+				string rendezvousIp = parts[0];
+				int rendezvousPort = int.Parse(parts[1]);
+				IPEndPoint rendezvousEndpoint = new IPEndPoint(IPAddress.Parse(rendezvousIp), rendezvousPort);
+				
+				// Get role from ComboBox
+				string? role = (PeerRole.SelectedItem as ComboBoxItem)?.Content.ToString();
+				if (string.IsNullOrEmpty(role))
+				{
+					MessageBox.Show("Select a role");
+					return;
+				}
+				int localPort = role == "PEER1" ? 5000 : 5002; // PEER1 listens on 5000, PEER2 on 5002
 
-				udpClient = new UdpClient();
-				connectedPeer = new IPEndPoint(IPAddress.Parse(ip), port);
+				// Bind udpClient to a fixed port
+				udpClient = new UdpClient(localPort);
+				isRunning = true;
 
-				// Client sends a test packet to the friend when connecting
-				StatusText.Text = $"Connecting to {FriendAddress.Text}...";
-				byte[] testPacket = new byte[] { 1 }; // Connection request set by "1"
-				await udpClient.SendAsync(testPacket, testPacket.Length, connectedPeer); // We can also put "0" on the 2nd parameter, meanign we send the whole packet
 
-				// Client starts listening after sending the connection request to enable bidirectional communication
+				byte[] roleBytes = Encoding.UTF8.GetBytes(role);
+				await udpClient.SendAsync(roleBytes, roleBytes.Length, rendezvousEndpoint); // Send role to server
+				StatusText.Text = $"Sent role: {role}";
+
+
+
+				// Get peer's IP:Port
 				UdpReceiveResult response = await udpClient.ReceiveAsync();
-				if (response.Buffer[0] == 2) // 2 == Request accepted by peer
+				string peerEndpointStr = Encoding.UTF8.GetString(response.Buffer);
+				string[] peerParts = peerEndpointStr.Split(':');
+				connectedPeer = new IPEndPoint(IPAddress.Parse(peerParts[0]), int.Parse(peerParts[1]));
+				StatusText.Text = $"Got peer endpoint: {connectedPeer}";
+
+				// Punch a hole by sending initial packets
+				byte[] punchPacket = Encoding.UTF8.GetBytes("PUNCH");
+				for (int i = 0; i < 10; i++) // Send multiple to ensure NAT opens
 				{
-					isRunning = true;
-					StatusText.Text = $"Connected to {FriendAddress.Text}!";
-					MessageBox.Show("Connected!");
-					await ListenForUdpMessages(udpClient); // Start listening for messages
+					await udpClient.SendAsync(punchPacket, punchPacket.Length, connectedPeer);
+					await Task.Delay(50); // Spread out to open NAT
 				}
-				else
-				{
-					throw new Exception("Connection refused");
-				}
+
+				StatusText.Text = $"Connected to {connectedPeer}";
+				MessageBox.Show("Connected!");
+				_ = ListenForUdpMessages(udpClient); // Start listening for messages
 			}
 			catch (Exception ex)
 			{
