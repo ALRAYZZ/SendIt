@@ -259,31 +259,38 @@ namespace SendIt
 
 				StatusText.Text = $"Sending file...";
 
-				// Send file metadata
-				byte[] nameBytes = Encoding.UTF8.GetBytes(fileName);
-				byte[] metaPacket = new byte[9 + nameBytes.Length];
-				metaPacket[0] = 2; // File command
-				BitConverter.GetBytes(nameBytes.Length).CopyTo(metaPacket, 1); // File name length
-				BitConverter.GetBytes(fileData.Length).CopyTo(metaPacket, 5); // File size
-				nameBytes.CopyTo(metaPacket, 9); // File name
-
-				await SendWithRetry(udpInstance, metaPacket, connectedPeer, expectAck: true);
-				StatusText.Text = "Sent metadata";
-
-				// Send file in chunks
-				const int chunkSize = 8192; // 8KB
-				int totalChunks = (int)Math.Ceiling((double)fileData.Length / chunkSize); // Checking how many chunks we need
-				for (int i = 0; i < totalChunks; i++)
+				using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
 				{
-					int offset = i * chunkSize; // Sets the bytes position to start reading from, as we send, we need to keep track what bytes we've sent
-					int length = Math.Min(chunkSize, fileData.Length - offset); // This is for the last chunk, if it's less than 8KB
-					byte[] chunk = new byte[length + 5];
-					chunk[0] = 4; // File chunk command
-					BitConverter.GetBytes(i).CopyTo(chunk, 1); // Chunk index, helps receiver know the order of the chunks Ex: chunk 0, chunk 1, chunk 2...
-					Array.Copy(fileData, offset, chunk, 5, length); // Copy a section of the file data to the chunk
+					// Send file metadata
+					long fileSize = fs.Length;
+					byte[] nameBytes = Encoding.UTF8.GetBytes(fileName);
+					byte[] metaPacket = new byte[9 + nameBytes.Length];
+					metaPacket[0] = 2; // File command
+					BitConverter.GetBytes(nameBytes.Length).CopyTo(metaPacket, 1); // File name length
+					BitConverter.GetBytes(fileData.Length).CopyTo(metaPacket, 5); // File size
+					nameBytes.CopyTo(metaPacket, 9); // File name
 
-					await SendWithRetry(udpInstance, chunk, connectedPeer);
-					StatusText.Text = $"Sending file... ({i + 1}/{totalChunks} bytes)";
+					await SendWithRetry(udpInstance, metaPacket, connectedPeer, expectAck: true);
+					StatusText.Text = "Sent metadata";
+
+					// Send file in chunks
+					const int chunkSize = 8192; // 8KB
+					int totalChunks = (int)Math.Ceiling((double)fileData.Length / chunkSize); // Checking how many chunks we need
+					for (int i = 0; i < totalChunks; i++)
+					{
+						int offset = i * chunkSize; // Sets the bytes position to start reading from, as we send, we need to keep track what bytes we've sent
+						int length = Math.Min(chunkSize, fileData.Length - offset); // This is for the last chunk, if it's less than 8KB
+						byte[] chunkContent = new byte[length + 5];
+						await fs.ReadAsync(chunkContent, 0, length); // Read chunk from disk
+
+						byte[] chunk = new byte[length + 5];
+						chunk[0] = 4; // Chunk command
+						BitConverter.GetBytes(i).CopyTo(chunk, 1); // Chunk index, helps receiver know the order of the chunks Ex: chunk 0, chunk 1, chunk 2...
+						Array.Copy(chunkContent, 0, chunk, 5, length);
+
+						await SendWithRetry(udpInstance, chunk, connectedPeer);
+						StatusText.Text = $"Sending file... ({i + 1}/{totalChunks} bytes)";
+					}
 				}
 				StatusText.Text = "File sent!";
 			}
@@ -307,7 +314,6 @@ namespace SendIt
 					{
 						var receiveTask = listener.ReceiveAsync();
 						var completedTask = await Task.WhenAny(receiveTask, Task.Delay(10000, cts.Token));
-
 						if (completedTask == receiveTask)
 						{
 							UdpReceiveResult result = await receiveTask;
@@ -334,33 +340,33 @@ namespace SendIt
 				}
 
 				int nameLenght = BitConverter.ToInt32(metaData, 1);
-				int fileSize = BitConverter.ToInt32(metaData, 5);
+				long fileSize = BitConverter.ToInt32(metaData, 5);
 				string fileName = Encoding.UTF8.GetString(metaData, 9, nameLenght);
+				string path = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
 
 				Dispatcher.Invoke(() => StatusText.Text = $"Receiving file: {fileName}");
 
-				// Receive file in chunks
-				byte[] fileData = new byte[fileSize];
-				int totalReceived = 0;
-				Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
-
-				// Process buffered packets
-				foreach (var buffered in packetBuffer.Where(p => p.Buffer[0] == 4))
+				// Write chunks to disk as they arrive
+				using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write))
 				{
-					totalReceived = await ProcessChunk(buffered.Buffer, chunks, fileData, totalReceived, listener);
-				}
+					Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
+					long totalReceived = 0;
 
-				while (totalReceived < fileSize)
-				{
-					UdpReceiveResult chunkResult = await listener.ReceiveAsync();
-					if (chunkResult.Buffer[0] == 4)
+					// Process buffered chunks
+					foreach (var buffered in packetBuffer.Where(p => p.Buffer[0] == 4))
 					{
-						totalReceived = await ProcessChunk(chunkResult.Buffer, chunks, fileData, totalReceived, listener);
+						totalReceived = await ProcessChunk(buffered.Buffer, chunks, fs, totalReceived, listener);
 					}
-				}
 
-				string path = Path.Combine(Directory.GetCurrentDirectory(), $"received_{fileName}");
-				File.WriteAllBytes(path, fileData);
+					while (totalReceived < fileSize)
+					{
+						UdpReceiveResult chunkResult = await listener.ReceiveAsync();
+						if (chunkResult.Buffer[0] == 4)
+						{
+							totalReceived = await ProcessChunk(chunkResult.Buffer, chunks, fs, totalReceived, listener);
+						}
+					} 
+				}
 				Dispatcher.Invoke(() => StatusText.Text = $"File received: {path}");
 			}
 			catch (Exception ex)
@@ -371,7 +377,7 @@ namespace SendIt
 
 
 
-		private async Task SendWithRetry(UdpClient udpInstance, byte[] data, IPEndPoint endpoint, int maxRetries = 3, bool expectAck = true)
+		private async Task SendWithRetry(UdpClient udpInstance, byte[] data, IPEndPoint endpoint, int maxRetries = 3, bool expectAck = true)	
 		{
 			for (int attempt = 0; attempt < maxRetries; attempt++)
 			{
@@ -411,7 +417,7 @@ namespace SendIt
 				}
 			}
 		}
-		private async Task<int> ProcessChunk(byte[] chunkData, Dictionary<int, byte[]> chunks, byte[] fileData, int totalReceived, UdpClient listener)
+		private async Task<long> ProcessChunk(byte[] chunkData, Dictionary<int, byte[]> chunks, FileStream fs, long totalReceived, UdpClient listener)
 		{
 			int seqNum = BitConverter.ToInt32(chunkData, 1);
 			int chunkLength = chunkData.Length - 5;
@@ -422,8 +428,9 @@ namespace SendIt
 				Array.Copy(chunkData, 5, chunkContent, 0, chunkLength);
 				chunks[seqNum] = chunkContent;
 
-				int position = seqNum * 8192;
-				Array.Copy(chunkContent, 0, fileData, position, chunkLength);
+				long position = seqNum * 8192;
+				fs.Seek(position, SeekOrigin.Begin);
+				await fs.WriteAsync(chunkContent, 0, chunkLength);
 				totalReceived += chunkLength;
 
 				byte[] ack = new byte[5];
@@ -431,7 +438,7 @@ namespace SendIt
 				BitConverter.GetBytes(seqNum).CopyTo(ack, 1);
 				await listener.SendAsync(ack, ack.Length, connectedPeer);
 
-				Dispatcher.Invoke(() => StatusText.Text = $"Sent ACK for chunk {seqNum}, total: {totalReceived}/{fileData.Length}");
+				Dispatcher.Invoke(() => StatusText.Text = $"Sent ACK for chunk {seqNum}, total: {totalReceived}/{fs.Length}");
 			}
 			return totalReceived;
 		}
